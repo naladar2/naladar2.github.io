@@ -1335,6 +1335,12 @@ async function syncAll() {
 
       if(!d.ok) throw new Error(d.error || 'Ошибка записи');
 
+      // Сохраняем счётчики ДО очистки очередей
+      const deletedCount = toDelete.length;
+      const addedCount   = toAdd.length;
+      const serverDeleted = d.deleted || 0;
+      const serverAdded   = d.added   || 0;
+
       S.deletedItems = [];
       S.pendingAdd   = [];
 
@@ -1354,7 +1360,7 @@ async function syncAll() {
     renderCatalogCounts();
     updateSheetUI();
     const msg = hasChanges
-      ? `Готово! Выгружено изменений: ${toAdd.length} добавлено, ${toDelete.length} удалено.\nЗагружено из таблицы: ${S.inventory.length} товаров`
+      ? `Готово!\nУдалено из таблицы: ${serverDeleted} (отправлено: ${deletedCount})\nДобавлено: ${serverAdded}\nТоваров в списке: ${S.inventory.length}`
       : `Загружено из таблицы: ${S.inventory.length} товаров`;
     alert(msg);
   } catch(e) {
