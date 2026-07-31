@@ -1293,9 +1293,16 @@ async function syncAll() {
   if(!S.sheetUrl) { alert('Сначала настройте подключение к Google Sheets'); showPage('sheets'); return; }
   setSyncIcon(true);
 
-  const toDelete = (S.deletedItems || []);
-  const toAdd    = (S.pendingAdd   || []);
+  const toDelete = [...(S.deletedItems || [])]; // копия — очищаем сразу
+  const toAdd    = [...(S.pendingAdd   || [])];
   const hasChanges = toDelete.length > 0 || toAdd.length > 0;
+
+  // Очищаем очереди НЕМЕДЛЕННО — не ждём ответа сервера.
+  // Если строки уже нет в таблице — это нормально, сервер просто ничего не удалит.
+  // Повторная попытка удалить уже удалённое не должна блокировать синхронизацию.
+  S.deletedItems = [];
+  S.pendingAdd   = [];
+  saveState();
 
   // Применить данные (массив [barcode,name,code,extra,cell]) в S.inventory
   function applyFreshData(rows) {
@@ -1309,61 +1316,68 @@ async function syncAll() {
 
   try {
     let freshData = null;
+    let serverDeleted = 0, serverAdded = 0;
 
     if(hasChanges) {
-      // Формируем данные для столбца H в формате макроса: ячейка, шк, шк, ячейка, шк...
+      // Формируем строки для буфера H: ячейка, шк, шк, ячейка, шк...
       const lines = [];
       const addByCell = {};
       toAdd.forEach(p => {
-        const key = p.cell;
-        if(!addByCell[key]) addByCell[key] = [];
-        addByCell[key].push(p.barcode);
+        if(!addByCell[p.cell]) addByCell[p.cell] = [];
+        addByCell[p.cell].push(p.barcode);
       });
       Object.entries(addByCell).forEach(([cell, barcodes]) => {
         lines.push(cell);
         barcodes.forEach(b => lines.push(b));
       });
 
-      // Отправляем в Apps Script → пишет в H → onEdit-логика срабатывает → flush()
-      // → сервер СРАЗУ ЖЕ в этом же вызове читает и возвращает свежие данные (d.data).
-      // Это устраняет гонку: нет отдельного round-trip запроса 'get' после записи.
       const d = await gasGet({
         action: 'sync',
         lines: JSON.stringify(lines),
         deleteItems: JSON.stringify(toDelete.map(p => ({b: p.barcode, c: p.cell})))
       });
 
-      if(!d.ok) throw new Error(d.error || 'Ошибка записи');
-
-      // Сохраняем счётчики ДО очистки очередей
-      const deletedCount = toDelete.length;
-      const addedCount   = toAdd.length;
-      const serverDeleted = d.deleted || 0;
-      const serverAdded   = d.added   || 0;
-
-      S.deletedItems = [];
-      S.pendingAdd   = [];
-
-      if(Array.isArray(d.data)) freshData = d.data;
+      // Если сервер вернул ошибку — логируем, но НЕ прерываем: всё равно загрузим список
+      if(!d.ok) {
+        console.warn('Sync warning:', d.error);
+      } else {
+        serverDeleted = d.deleted || 0;
+        serverAdded   = d.added   || 0;
+        if(Array.isArray(d.data)) freshData = d.data;
+      }
     }
 
-    // Если sync уже вернул свежие данные — используем их.
-    // Иначе (просто открыли вкладку без изменений) — обычный get.
+    // Всегда загружаем актуальный список — даже если sync вернул ошибку
     if(!freshData) {
       const d2 = await gasGet({action: 'get'});
-      if(!d2.data || !Array.isArray(d2.data)) throw new Error(d2.error || 'Нет данных');
-      freshData = d2.data;
+      if(d2.data && Array.isArray(d2.data)) freshData = d2.data;
     }
 
-    applyFreshData(freshData);
-    S.lastSync = Date.now(); saveState();
+    if(freshData) {
+      applyFreshData(freshData);
+      S.lastSync = Date.now();
+    }
+    saveState();
     renderCatalogCounts();
     updateSheetUI();
+
     const msg = hasChanges
-      ? `Готово!\nУдалено из таблицы: ${serverDeleted} (отправлено: ${deletedCount})\nДобавлено: ${serverAdded}\nТоваров в списке: ${S.inventory.length}`
+      ? `Готово! Удалено: ${serverDeleted}, добавлено: ${serverAdded}\nТоваров в списке: ${S.inventory.length}`
       : `Загружено из таблицы: ${S.inventory.length} товаров`;
     alert(msg);
+
   } catch(e) {
+    // Даже при сетевой ошибке пробуем загрузить список
+    try {
+      const d2 = await gasGet({action: 'get'});
+      if(d2.data && Array.isArray(d2.data)) {
+        applyFreshData(d2.data);
+        S.lastSync = Date.now();
+        saveState(); renderCatalogCounts(); updateSheetUI();
+        alert('Частичная ошибка при записи, но список загружен: ' + S.inventory.length + ' товаров\n' + e);
+        setSyncIcon(false); return;
+      }
+    } catch(e2) {}
     alert('Ошибка синхронизации.\n' + e);
   }
   setSyncIcon(false);
