@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <defs>
+    <clipPath id="round"><rect width="192" height="192" rx="42" ry="42"/></clipPath>
+  </defs>
+  <rect width="192" height="192" rx="42" ry="42" fill="#0c1426"/>
+  <g clip-path="url(#round)">
+    <!-- Коробка -->
+    <rect x="19" y="77" width="103" height="88" rx="10" ry="10" fill="#111c34" stroke="#3b82f6" stroke-width="9"/>
+    <!-- Крышка -->
+    <line x1="24" y1="102" x2="116" y2="102" stroke="#3b82f6" stroke-width="9" stroke-linecap="round"/>
+    <!-- Ушко крышки -->
+    <rect x="56" y="64" width="28" height="18" rx="5" ry="5" fill="#3b82f6"/>
+    <!-- Полоски внутри -->
+    <rect x="28" y="114" width="62" height="9" rx="4" fill="#3b82f6" opacity="0.7"/>
+    <rect x="28" y="130" width="42" height="9" rx="4" fill="#3b82f6" opacity="0.6"/>
+    <rect x="28" y="146" width="52" height="9" rx="4" fill="#3b82f6" opacity="0.65"/>
+    <!-- Лупа - круг -->
+    <circle cx="135" cy="55" r="34" fill="#111c34" stroke="#f8fafc" stroke-width="11"/>
+    <circle cx="135" cy="55" r="19" fill="#19324a"/>
+    <!-- Блик -->
+    <circle cx="126" cy="46" r="6" fill="#a0c8ff" opacity="0.8"/>
+    <!-- Ручка лупы -->
+    <line x1="158" y1="78" x2="178" y2="100" stroke="#f8fafc" stroke-width="11" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -178,6 +178,7 @@
     .ib-text strong{display:block;font-size:14px;margin-bottom:1px}
     .ib-text span{color:var(--muted)}
   </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -822,39 +823,32 @@ async function toggleAddScanner() {
     scanAddStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     document.getElementById('videoAdd').srcObject = scanAddStream;
     box.classList.add('open');
-    if('BarcodeDetector' in window) {
-      detectorAdd = new BarcodeDetector({formats:['ean_13','ean_8','code_128','qr_code','upc_a','upc_e','code_39']});
-      requestAnimationFrame(scanAddFrame);
-    }
+    detectorAdd = createNativeDetector(); // null на iOS — jsQR
+    requestAnimationFrame(scanAddFrame);
   } catch(e) { alert('Нет доступа к камере'); }
 }
 
 async function scanAddFrame() {
-  if(!detectorAdd || !scanAddStream) return;
+  if(!scanAddStream) return;
   const v = document.getElementById('videoAdd');
-  if(v.readyState >= 2) {
-    try {
-      const codes = await detectorAdd.detect(v);
-      if(codes.length) {
-        const val = codes[0].rawValue;
-        // Проверяем QR формата: barcode|name|code|cell
-        const parts = val.split('|');
-        if(parts.length === 4) {
-          document.getElementById('addBarcode').value = parts[0];
-          document.getElementById('addName').value = parts[1];
-          document.getElementById('addCode').value = parts[2];
-          document.getElementById('addCellManual').value = parts[3].toUpperCase();
-        } else {
-          document.getElementById('addBarcode').value = val;
-          autofillFromBarcode(val);
-        }
-        stopAddScanner();
-        if(navigator.vibrate) navigator.vibrate(60);
-        return;
-      }
-    } catch(e){}
+  const val = await detectBarcode(v, detectorAdd);
+  if(val) {
+    // Проверяем QR формата: barcode|name|code|cell
+    const parts = val.split('|');
+    if(parts.length === 4) {
+      document.getElementById('addBarcode').value = parts[0];
+      document.getElementById('addName').value = parts[1];
+      document.getElementById('addCode').value = parts[2];
+      document.getElementById('addCellManual').value = parts[3].toUpperCase();
+    } else {
+      document.getElementById('addBarcode').value = val;
+      autofillFromBarcode(val);
+    }
+    stopAddScanner();
+    if(navigator.vibrate) navigator.vibrate(60);
+  } else {
+    requestAnimationFrame(scanAddFrame);
   }
-  requestAnimationFrame(scanAddFrame);
 }
 
 function stopAddScanner() {
@@ -1087,8 +1081,50 @@ function showAddResult(ok, msg) {
 }
 
 /* ════════════════════════════════════════════
-   SCANNER
+   SCANNER — универсальный (Android + iOS)
+   BarcodeDetector API → Chrome/Android
+   jsQR (canvas) → iOS Safari и другие
 ════════════════════════════════════════════ */
+
+// Создаём скрытый canvas для jsQR один раз
+const _scanCanvas = document.createElement('canvas');
+const _scanCtx = _scanCanvas.getContext('2d');
+
+// Универсальная функция: пытается распознать штрихкод из видео-элемента
+// Возвращает строку с кодом или null
+async function detectBarcode(videoEl, nativeDetector) {
+  if(videoEl.readyState < 2) return null;
+  // Метод 1 — нативный BarcodeDetector (Chrome Android)
+  if(nativeDetector) {
+    try {
+      const codes = await nativeDetector.detect(videoEl);
+      if(codes.length) return codes[0].rawValue;
+    } catch(e){}
+    return null;
+  }
+  // Метод 2 — jsQR через canvas (iOS Safari, Firefox, etc.)
+  if(typeof jsQR === 'undefined') return null;
+  const w = videoEl.videoWidth;
+  const h = videoEl.videoHeight;
+  if(!w || !h) return null;
+  _scanCanvas.width = w;
+  _scanCanvas.height = h;
+  _scanCtx.drawImage(videoEl, 0, 0, w, h);
+  const imageData = _scanCtx.getImageData(0, 0, w, h);
+  const result = jsQR(imageData.data, w, h, {inversionAttempts:'dontInvert'});
+  return result ? result.data : null;
+}
+
+// Создаём нативный детектор если доступен
+function createNativeDetector() {
+  if('BarcodeDetector' in window) {
+    try {
+      return new BarcodeDetector({formats:['ean_13','ean_8','code_128','qr_code','upc_a','upc_e','code_39','itf']});
+    } catch(e){}
+  }
+  return null;
+}
+
 async function toggleScanner() {
   const box = document.getElementById('scannerBox');
   if(box.classList.contains('open')) { stopScanner(); return; }
@@ -1097,30 +1133,21 @@ async function toggleScanner() {
     document.getElementById('video').srcObject = scanStream;
     box.classList.add('open');
     document.getElementById('scanBtn').textContent = '✕ Остановить сканер';
-    if('BarcodeDetector' in window) {
-      detector = new BarcodeDetector({formats:['ean_13','ean_8','code_128','qr_code','upc_a','upc_e','code_39','itf']});
-      requestAnimationFrame(scanFrame);
-    } else {
-      alert('Chrome 83+ на Android поддерживает сканирование. Сейчас используйте ручной ввод.');
-      stopScanner();
-    }
+    detector = createNativeDetector(); // null на iOS — будет использоваться jsQR
+    requestAnimationFrame(scanFrame);
   } catch(e) { alert('Нет доступа к камере. Разрешите в настройках браузера.'); }
 }
 
 async function scanFrame() {
-  if(!detector||!scanStream) return;
+  if(!scanStream) return;
   const v = document.getElementById('video');
-  if(v.readyState >= 2) {
-    try {
-      const codes = await detector.detect(v);
-      if(codes.length) {
-        document.getElementById('searchInput').value = codes[0].rawValue;
-        stopScanner();
-        doSearch();
-        if(navigator.vibrate) navigator.vibrate(80);
-        return;
-      }
-    } catch(e){}
+  const code = await detectBarcode(v, detector);
+  if(code) {
+    document.getElementById('searchInput').value = code;
+    stopScanner();
+    doSearch();
+    if(navigator.vibrate) navigator.vibrate(80);
+    return;
   }
   requestAnimationFrame(scanFrame);
 }
@@ -1308,6 +1335,12 @@ async function syncAll() {
 
       if(!d.ok) throw new Error(d.error || 'Ошибка записи');
 
+      // Сохраняем счётчики ДО очистки очередей
+      const deletedCount = toDelete.length;
+      const addedCount   = toAdd.length;
+      const serverDeleted = d.deleted || 0;
+      const serverAdded   = d.added   || 0;
+
       S.deletedItems = [];
       S.pendingAdd   = [];
 
@@ -1327,7 +1360,7 @@ async function syncAll() {
     renderCatalogCounts();
     updateSheetUI();
     const msg = hasChanges
-      ? `Готово! Выгружено изменений: ${toAdd.length} добавлено, ${toDelete.length} удалено.\nЗагружено из таблицы: ${S.inventory.length} товаров`
+      ? `Готово!\nУдалено из таблицы: ${serverDeleted} (отправлено: ${deletedCount})\nДобавлено: ${serverAdded}\nТоваров в списке: ${S.inventory.length}`
       : `Загружено из таблицы: ${S.inventory.length} товаров`;
     alert(msg);
   } catch(e) {

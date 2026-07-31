@@ -116,11 +116,17 @@ function processAction(action, params) {
 
     let deleted = 0;
     if (deleteItems.length > 0) {
-      const delSet = new Set(deleteItems.map(it => String(it.b).trim() + '|' + String(it.c).trim()));
+      // Нормализуем ключи: верхний регистр + без пробелов — чтобы A1 == a1 == A1
+      const delSet = new Set(deleteItems.map(it =>
+        String(it.b).trim() + '|' + String(it.c).trim().toUpperCase()
+      ));
       const last = sheet.getLastRow();
       for (let i = last; i >= 2; i--) {
         const r = sheet.getRange(i, 1, 1, COL_TAKEN).getValues()[0];
-        const key = String(r[COL_BARCODE-1]).trim() + '|' + String(r[COL_CELL-1]).trim();
+        const bc   = String(r[COL_BARCODE-1]).trim();
+        const cell = String(r[COL_CELL-1]).trim().toUpperCase();
+        if (!bc) continue;
+        const key = bc + '|' + cell;
         if (delSet.has(key)) {
           sheet.deleteRow(i);
           deleted++;
