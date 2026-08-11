@@ -110,50 +110,75 @@ function processAction(action, params) {
   // 1) удаляет взятые строки (по barcode+cell)
   // 2) пишет новые строки через ту же логику что и onEdit-макрос (ячейка → штрихкоды)
   if (action === 'sync') {
-    const lines       = JSON.parse(params.lines       || '[]'); // ['A1','4607...','4602...','K1/1','4670...']
-    const deleteItems = JSON.parse(params.deleteItems || '[]'); // [{b,c}, ...]
+    const lines       = JSON.parse(params.lines       || '[]');
+    const deleteItems = JSON.parse(params.deleteItems || '[]');
     const sheet = getWorkSheet();
 
     let deleted = 0;
     if (deleteItems.length > 0) {
-      // Нормализуем ключи: верхний регистр + без пробелов — чтобы A1 == a1 == A1
-      const delSet = new Set(deleteItems.map(it =>
-        String(it.b).trim() + '|' + String(it.c).trim().toUpperCase()
-      ));
-      const last = sheet.getLastRow();
-      for (let i = last; i >= 2; i--) {
-        const r = sheet.getRange(i, 1, 1, COL_TAKEN).getValues()[0];
-        const bc   = String(r[COL_BARCODE-1]).trim();
-        const cell = String(r[COL_CELL-1]).trim().toUpperCase();
-        if (!bc) continue;
-        const key = bc + '|' + cell;
-        if (delSet.has(key)) {
-          sheet.deleteRow(i);
-          deleted++;
-        }
-      }
+      deleted = batchDeleteRows(sheet, deleteItems);
     }
 
     const result = lines.length > 0 ? processInputBuffer(sheet, lines) : { added: 0 };
 
-    // КРИТИЧНО: принудительно сбрасываем все изменения на диск Google Sheets
-    // перед тем как читать их обратно — иначе можно прочитать ещё не
-    // закоммиченное (старое) состояние.
     SpreadsheetApp.flush();
-
-    // Читаем актуальные данные СРАЗУ ЖЕ, в рамках того же выполнения скрипта —
-    // это гарантированно исключает гонку состояний с отдельным запросом 'get',
-    // потому что Apps Script выполняет один вызов полностью до конца,
-    // прежде чем начнёт следующий.
     const freshData = readWorkSheetData(sheet);
-
     return { ok: true, deleted: deleted, added: result.added, data: freshData, count: freshData.length };
   }
 
   return { error: 'Unknown action: ' + action };
 }
 
-// Чтение данных рабочего листа — общая функция для 'get' и 'sync'
+// ── Пакетное удаление строк ──────────────────────────────
+// Вместо deleteRow() в цикле (N медленных API-вызовов) читаем всё одним
+// getValues(), фильтруем нужные строки в памяти, пишем обратно одним
+// setValues() + очищаем хвост. Скорость: O(1) запросов к Sheets вместо O(N).
+function batchDeleteRows(sheet, deleteItems) {
+  const last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  // Нормализуем ключи для сравнения
+  const delSet = new Set(deleteItems.map(function(it) {
+    return String(it.b).trim() + '|' + String(it.c).trim().toUpperCase();
+  }));
+
+  // Читаем ВСЕ данные одним запросом
+  const numCols = COL_TAKEN; // A:F
+  const allRows = sheet.getRange(2, 1, last - 1, numCols).getValues();
+
+  // Разделяем на «оставить» и «удалить»
+  const keepRows = [];
+  let deleted = 0;
+
+  for (var i = 0; i < allRows.length; i++) {
+    const bc   = String(allRows[i][COL_BARCODE - 1]).trim();
+    const cell = String(allRows[i][COL_CELL - 1]).trim().toUpperCase();
+    if (!bc) continue; // пропускаем пустые строки
+    const key = bc + '|' + cell;
+    if (delSet.has(key)) {
+      deleted++;
+    } else {
+      keepRows.push(allRows[i]);
+    }
+  }
+
+  if (deleted === 0) return 0;
+
+  if (keepRows.length > 0) {
+    // Записываем оставшиеся строки обратно — один setValues()
+    sheet.getRange(2, 1, keepRows.length, numCols).setValues(keepRows);
+  }
+
+  // Очищаем строки которые теперь лишние (хвост)
+  const clearStart = keepRows.length + 2;
+  if (clearStart <= last) {
+    sheet.getRange(clearStart, 1, last - clearStart + 1, numCols).clearContent();
+  }
+
+  return deleted;
+}
+
+// Чтение данных рабочего листа — общая функция для 'get' и 'sync' 
 function readWorkSheetData(sheet) {
   const last = sheet.getLastRow();
   if (last < 2) return [];
