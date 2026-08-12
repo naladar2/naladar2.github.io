@@ -265,29 +265,20 @@ function processInputBuffer(sheet, values) {
 // Если в B2, C2, D2 есть формулы — копирует их на новые строки
 function extendFormulas(sheet, startRow, count) {
   try {
-    // Проверяем есть ли формулы в строке 2 (шаблонная строка)
-    const formulaCols = [COL_NAME, COL_CODE, COL_EXTRA]; // B, C, D
+    const formulaCols = [COL_NAME, COL_CODE, COL_EXTRA]; // B (2), C (3), D (4)
+
     formulaCols.forEach(function(col) {
       const templateCell = sheet.getRange(2, col);
-      const formula = templateCell.getFormula();
-      if (!formula) return; // нет формулы — пропускаем
 
-      // Копируем формулу на все новые строки
-      for (var r = 0; r < count; r++) {
-        const targetRow = startRow + r;
-        if (targetRow === 2) continue; // не перезаписываем шаблон
-        // Формула из строки 2 с заменой номера строки
-        const newFormula = formula.replace(/(\$?[A-Z]+)2/g, function(match, colRef) {
-          // Заменяем только незакреплённые строки (без $)
-          if (match.startsWith('$')) return match;
-          return colRef + targetRow;
-        });
-        sheet.getRange(targetRow, col).setFormula(newFormula);
+      // copyTo со встроенным механизмом Google Sheets автоматически сдвигает
+      // диапазоны (A2→A3→A4) — работает с любыми формулами ВПР/VLOOKUP
+      if (templateCell.getFormula()) {
+        const targetRange = sheet.getRange(startRow, col, count, 1);
+        templateCell.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
       }
     });
   } catch(e) {
     Logger.log('extendFormulas error: ' + e);
-    // Не критично — данные уже записаны
   }
 }
 
