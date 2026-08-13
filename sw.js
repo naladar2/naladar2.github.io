@@ -1,4 +1,4 @@
-const CACHE = 'warehouse-v19';
+const CACHE = 'warehouse-v20';
 const ASSETS = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 const NETWORK_TIMEOUT = 4000;
 

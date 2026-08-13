@@ -68,10 +68,18 @@ function onEdit(e) {
   const rowEnd = range.getLastRow();
   const numRows = rowEnd - rowStart + 1;
   const workingRange = sheet.getRange(rowStart, INPUT_COL, numRows, 1);
+
+  // Читаем данные ДО очистки
   const values = workingRange.getValues().map(r => r[0]);
 
-  const result = processInputBuffer(sheet, values);
+  // Очищаем H НЕМЕДЛЕННО — до записи в A/E/G.
+  // Это предотвращает расширение «Умной таблицы» вправо:
+  // таблица расширяется только если в H остаются данные в момент
+  // когда скрипт пишет в соседние столбцы.
   workingRange.clearContent();
+  SpreadsheetApp.flush(); // принудительно применяем очистку
+
+  const result = processInputBuffer(sheet, values);
 
   if (result.added > 0) {
     sheet.getParent().toast('Успешно обработано строк: ' + result.added, 'Система ввода', 3);
