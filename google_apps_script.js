@@ -34,7 +34,7 @@ const COL_NAME    = 2; // B — ARRAYFORMULA (не перезаписываем)
 const COL_CODE    = 3; // C — ARRAYFORMULA
 const COL_EXTRA   = 4; // D — ARRAYFORMULA
 const COL_CELL    = 5; // E — ячейка склада
-const COL_TAKEN   = 7; // G — взято (колонка F пустая)
+const COL_TAKEN   = 6; // F — взято
 
 // ── ТЕСТ ────────────────────────────────────────────────
 function testScript() {
@@ -300,7 +300,7 @@ function processInputBuffer(sheet, values) {
     // B/C/D заполняет ARRAYFORMULA автоматически — не трогаем.
     sheet.getRange(nextRow, COL_BARCODE, count, 1).setValues(barcodesToInsert); // A — штрихкод
     sheet.getRange(nextRow, COL_CELL,    count, 1).setValues(storageCellsToInsert); // E — ячейка
-    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);     // G — взято
+    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);     // F — взято
 
     added = count;
   }
