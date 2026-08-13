@@ -25,16 +25,16 @@ const WORK_SHEET = 'Товары';
 const REF_SHEET  = 'Остатки';
 const INPUT_COL  = 8; // H
 
-// Актуальная структура листа «Товары»:
-// A:ШК  B:Название(ВПР)  C:Артикул(ВПР)  D:Код(ВПР)
-// E:Ячейка  F:(удалён)  G:Взято  H:Буфер ввода
-// Строка 2 — шаблонная (формулы ВПР), данные начиная с 3-й строки
-const COL_BARCODE = 1; // A — штрихкод
-const COL_NAME    = 2; // B — название (ВПР, не перезаписываем)
-const COL_CODE    = 3; // C — артикул (ВПР)
-const COL_EXTRA   = 4; // D — код материала (ВПР)
+// Структура листа «Товары»:
+// A:ШК  B:Название  C:Артикул  D:Код  E:Ячейка  [F:пусто]  G:Взято  H:Буфер
+// B/C/D заполняет ARRAYFORMULA автоматически — скрипт их НЕ трогает
+// Скрипт пишет только: A (штрихкод), E (ячейка), G (взято)
+const COL_BARCODE = 1; // A
+const COL_NAME    = 2; // B — ARRAYFORMULA (не перезаписываем)
+const COL_CODE    = 3; // C — ARRAYFORMULA
+const COL_EXTRA   = 4; // D — ARRAYFORMULA
 const COL_CELL    = 5; // E — ячейка склада
-const COL_TAKEN   = 7; // G — взято (F был удалён)
+const COL_TAKEN   = 7; // G — взято (колонка F пустая)
 
 // ── ТЕСТ ────────────────────────────────────────────────
 function testScript() {
@@ -142,7 +142,7 @@ function processAction(action, params) {
     const sheet = getWorkSheet();
     const last = sheet.getLastRow();
     if (last < 3) return { cells: [] };
-    const vals = sheet.getRange(3, COL_CELL, last - 2, 1).getValues();
+    const vals = sheet.getRange(2, COL_CELL, last - 1, 1).getValues();
     const counts = {};
     vals.forEach(function(r) {
       const cell = String(r[0]).trim().toUpperCase();
@@ -162,11 +162,11 @@ function processAction(action, params) {
     const last = sheet.getLastRow();
     if (last < 3) return { ok: true, deleted: 0 };
     // Удаляем все строки где ячейка = targetCell (снизу вверх)
-    const cellCol = sheet.getRange(3, COL_CELL, last - 2, 1).getValues();
+    const cellCol = sheet.getRange(2, COL_CELL, last - 1, 1).getValues();
     let deleted = 0;
     for (var i = cellCol.length - 1; i >= 0; i--) {
       if (String(cellCol[i][0]).trim().toUpperCase() === targetCell) {
-        sheet.deleteRow(i + 3);
+        sheet.deleteRow(i + 2);
         deleted++;
       }
     }
@@ -184,7 +184,7 @@ function processAction(action, params) {
 // Удаляем ровно столько вхождений каждого ключа, сколько передано в deleteItems.
 function batchDeleteRows(sheet, deleteItems) {
   const last = sheet.getLastRow();
-  if (last < 3) return 0; // строка 2 — шаблон, данные с 3-й
+  if (last < 2) return 0; // данные с строки 2 (ARRAYFORMULA)
 
   // Считаем сколько раз каждый ключ нужно удалить
   const delCount = new Map();
@@ -194,11 +194,12 @@ function batchDeleteRows(sheet, deleteItems) {
   });
 
   // Читаем строки данных начиная с 3-й (строка 2 = шаблон с формулами)
-  const dataStart = 3;
+  // ARRAYFORMULA: данные с строки 2
+  const dataStart = 2;
   const dataCount = last - dataStart + 1;
   if (dataCount < 1) return 0;
 
-  // Читаем только нужные колонки: A (штрихкод) и F (ячейка)
+  // Читаем A (штрихкод) и E (ячейка)
   const barcodeCol = sheet.getRange(dataStart, COL_BARCODE, dataCount, 1).getValues();
   const cellCol    = sheet.getRange(dataStart, COL_CELL,    dataCount, 1).getValues();
 
@@ -230,16 +231,21 @@ function batchDeleteRows(sheet, deleteItems) {
 // Чтение данных рабочего листа — общая функция для 'get' и 'sync' 
 function readWorkSheetData(sheet) {
   const last = sheet.getLastRow();
-  if (last < 3) return []; // строка 2 — шаблон, данные с 3-й
-  const vals = sheet.getRange(3, 1, last - 2, COL_TAKEN).getValues();
+  if (last < 2) return [];
+  // ARRAYFORMULA: данные с строки 2, читаем A..G
+  const vals = sheet.getRange(2, 1, last - 1, COL_TAKEN).getValues();
   return vals
-    .filter(function(r) { return String(r[COL_BARCODE-1]).trim() !== ''; })
+    .filter(function(r) {
+      // Фильтруем только строки где есть штрихкод в A
+      // ARRAYFORMULA может заполнять B/C/D даже для пустых строк — игнорируем их
+      return String(r[COL_BARCODE - 1]).trim() !== '';
+    })
     .map(function(r) { return [
-      String(r[COL_BARCODE-1]).trim(),  // A — штрихкод
-      String(r[COL_NAME-1]),            // B — название (из формулы ВПР)
-      String(r[COL_CODE-1]),            // C — артикул
-      String(r[COL_EXTRA-1]),           // D — код материала
-      String(r[COL_CELL-1]).trim(),     // F — ячейка склада
+      String(r[COL_BARCODE - 1]).trim(), // A — штрихкод
+      String(r[COL_NAME   - 1]),         // B — название (ARRAYFORMULA)
+      String(r[COL_CODE   - 1]),         // C — артикул
+      String(r[COL_EXTRA  - 1]),         // D — код материала
+      String(r[COL_CELL   - 1]).trim(),  // E — ячейка склада
     ];});
 }
 
@@ -280,50 +286,26 @@ function processInputBuffer(sheet, values) {
   let added = 0;
   if (barcodesToInsert.length > 0) {
     const lastRowA = sheet.getLastRow();
-    let nextRow = 3; // минимум строка 3 — строка 2 содержит шаблонные формулы ВПР
-    if (lastRowA >= 3) {
-      const aValues = sheet.getRange('A3:A' + lastRowA).getValues();
+    // ARRAYFORMULA в B/C/D заполняется автоматически при добавлении штрихкода в A.
+    // Ищем первую пустую строку в A начиная со строки 2.
+    let nextRow = 2;
+    if (lastRowA >= 2) {
+      const aValues = sheet.getRange('A2:A' + lastRowA).getValues();
       for (let j = aValues.length - 1; j >= 0; j--) {
         if (aValues[j][0] !== '') { nextRow = j + 3; break; }
       }
     }
     const count = barcodesToInsert.length;
-    sheet.getRange(nextRow, COL_BARCODE, count, 1).setValues(barcodesToInsert); // A
-    sheet.getRange(nextRow, COL_CELL,    count, 1).setValues(storageCellsToInsert); // F
-    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);     // G
-
-    // Протягиваем формулы ВПР из строки 2 на новые строки (B, C, D)
-    // Строка 2 — шаблон; данные начинаются с 3-й строки
-    if (nextRow >= 3) {
-      extendFormulas(sheet, nextRow, count);
-    }
+    // Записываем только штрихкод (A), ячейку (E) и статус (G).
+    // B/C/D заполняет ARRAYFORMULA автоматически — не трогаем.
+    sheet.getRange(nextRow, COL_BARCODE, count, 1).setValues(barcodesToInsert); // A — штрихкод
+    sheet.getRange(nextRow, COL_CELL,    count, 1).setValues(storageCellsToInsert); // E — ячейка
+    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);     // G — взято
 
     added = count;
   }
 
   return { added: added, cellsOnly: hasChanges && onlyCells };
-}
-
-// Протягивает формулы из строки 2 вниз на newRows строк начиная с startRow
-// Если в B2, C2, D2 есть формулы — копирует их на новые строки
-function extendFormulas(sheet, startRow, count) {
-  // Строка 2 — шаблон с формулами ВПР. Копируем формулы из неё на новые строки.
-  // Никогда не записываем в строку 2 — только читаем из неё.
-  if (startRow <= 2) return; // защита шаблонной строки
-  try {
-    const formulaCols = [COL_NAME, COL_CODE, COL_EXTRA]; // B, C, D
-
-    formulaCols.forEach(function(col) {
-      const templateCell = sheet.getRange(2, col);
-      if (templateCell.getFormula()) {
-        const targetRange = sheet.getRange(startRow, col, count, 1);
-        // copyTo автоматически сдвигает относительные ссылки (A2→A3→A4)
-        templateCell.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
-      }
-    });
-  } catch(e) {
-    Logger.log('extendFormulas error: ' + e);
-  }
 }
 
 // Адрес ячейки склада. Поддерживает два формата:
