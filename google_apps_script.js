@@ -25,13 +25,16 @@ const WORK_SHEET = 'Товары';
 const REF_SHEET  = 'Остатки';
 const INPUT_COL  = 8; // H
 
-// Колонки рабочего листа (1-индексация, как в Google Sheets)
-const COL_BARCODE = 1; // A
-const COL_NAME     = 2; // B
-const COL_CODE     = 3; // C — артикул
-const COL_EXTRA    = 4; // D — код материала
-const COL_CELL     = 5; // E — ячейка
-const COL_TAKEN    = 6; // F — взято
+// Актуальная структура листа «Товары»:
+// A:ШК  B:Название(ВПР)  C:Артикул(ВПР)  D:Код(ВПР)
+// E:Ячейка  F:(удалён)  G:Взято  H:Буфер ввода
+// Строка 2 — шаблонная (формулы ВПР), данные начиная с 3-й строки
+const COL_BARCODE = 1; // A — штрихкод
+const COL_NAME    = 2; // B — название (ВПР, не перезаписываем)
+const COL_CODE    = 3; // C — артикул (ВПР)
+const COL_EXTRA   = 4; // D — код материала (ВПР)
+const COL_CELL    = 5; // E — ячейка склада
+const COL_TAKEN   = 7; // G — взято (F был удалён)
 
 // ── ТЕСТ ────────────────────────────────────────────────
 function testScript() {
@@ -126,80 +129,110 @@ function processAction(action, params) {
     return { ok: true, deleted: deleted, added: result.added, data: freshData, count: freshData.length };
   }
 
+  // Список ячеек с количеством товаров в каждой
+  if (action === 'getCells') {
+    const sheet = getWorkSheet();
+    const last = sheet.getLastRow();
+    if (last < 3) return { cells: [] };
+    const vals = sheet.getRange(3, COL_CELL, last - 2, 1).getValues();
+    const counts = {};
+    vals.forEach(function(r) {
+      const cell = String(r[0]).trim().toUpperCase();
+      if (cell) counts[cell] = (counts[cell] || 0) + 1;
+    });
+    const cells = Object.keys(counts).sort().map(function(k) {
+      return { cell: k, count: counts[k] };
+    });
+    return { cells: cells };
+  }
+
+  // Очистить ячейку — удалить все товары из неё
+  if (action === 'clearCell') {
+    const targetCell = String(params.cell || '').trim().toUpperCase();
+    if (!targetCell) return { error: 'Не указана ячейка' };
+    const sheet = getWorkSheet();
+    const last = sheet.getLastRow();
+    if (last < 3) return { ok: true, deleted: 0 };
+    // Удаляем все строки где ячейка = targetCell (снизу вверх)
+    const cellCol = sheet.getRange(3, COL_CELL, last - 2, 1).getValues();
+    let deleted = 0;
+    for (var i = cellCol.length - 1; i >= 0; i--) {
+      if (String(cellCol[i][0]).trim().toUpperCase() === targetCell) {
+        sheet.deleteRow(i + 3);
+        deleted++;
+      }
+    }
+    SpreadsheetApp.flush();
+    const freshData = readWorkSheetData(sheet);
+    return { ok: true, deleted: deleted, data: freshData };
+  }
+
   return { error: 'Unknown action: ' + action };
 }
 
 // ── Пакетное удаление строк ──────────────────────────────
-// Читаем всё одним getValues(), фильтруем в памяти, пишем обратно одним
-// setValues(). O(1) запросов к API вместо O(N) — работает в разы быстрее.
-//
-// ВАЖНО: удаляем ровно столько вхождений каждого ключа, сколько передано
-// в deleteItems. Если передан 1 товар "4607|A1" — удалится только 1 строка,
-// даже если в таблице таких строк несколько (50 линеек в одной ячейке).
+// Читаем только A (штрихкод) и F (ячейка) чтобы определить что удалять.
+// Строка 2 содержит шаблонные формулы ВПР — её НИКОГДА не перезаписываем.
+// Удаляем ровно столько вхождений каждого ключа, сколько передано в deleteItems.
 function batchDeleteRows(sheet, deleteItems) {
   const last = sheet.getLastRow();
-  if (last < 2) return 0;
+  if (last < 3) return 0; // строка 2 — шаблон, данные с 3-й
 
-  // Считаем сколько раз каждый ключ нужно удалить (Map: ключ → счётчик)
+  // Считаем сколько раз каждый ключ нужно удалить
   const delCount = new Map();
   deleteItems.forEach(function(it) {
     const key = String(it.b).trim() + '|' + String(it.c).trim().toUpperCase();
     delCount.set(key, (delCount.get(key) || 0) + 1);
   });
 
-  // Читаем ВСЕ данные одним запросом
-  const numCols = COL_TAKEN;
-  const allRows = sheet.getRange(2, 1, last - 1, numCols).getValues();
+  // Читаем строки данных начиная с 3-й (строка 2 = шаблон с формулами)
+  const dataStart = 3;
+  const dataCount = last - dataStart + 1;
+  if (dataCount < 1) return 0;
 
-  const keepRows = [];
-  let deleted = 0;
+  // Читаем только нужные колонки: A (штрихкод) и F (ячейка)
+  const barcodeCol = sheet.getRange(dataStart, COL_BARCODE, dataCount, 1).getValues();
+  const cellCol    = sheet.getRange(dataStart, COL_CELL,    dataCount, 1).getValues();
 
-  for (var i = 0; i < allRows.length; i++) {
-    const bc   = String(allRows[i][COL_BARCODE - 1]).trim();
-    const cell = String(allRows[i][COL_CELL - 1]).trim().toUpperCase();
-    if (!bc) { keepRows.push(allRows[i]); continue; }
+  // Определяем какие строки-номера (в таблице) нужно удалить
+  // Идём снизу вверх чтобы номера не сдвигались при deleteRow
+  const rowsToDelete = [];
+  for (var i = dataCount - 1; i >= 0; i--) {
+    const bc   = String(barcodeCol[i][0]).trim();
+    const cell = String(cellCol[i][0]).trim().toUpperCase();
+    if (!bc) continue;
 
     const key = bc + '|' + cell;
     const remaining = delCount.get(key) || 0;
-
     if (remaining > 0) {
-      // Удаляем эту строку и уменьшаем счётчик
       delCount.set(key, remaining - 1);
-      deleted++;
-    } else {
-      keepRows.push(allRows[i]);
+      rowsToDelete.push(dataStart + i); // реальный номер строки в таблице
     }
   }
 
-  if (deleted === 0) return 0;
+  // Удаляем строки — deleteRow здесь оправдан т.к. строки уже выбраны,
+  // идём снизу вверх (rowsToDelete уже в обратном порядке)
+  rowsToDelete.forEach(function(rowNum) {
+    sheet.deleteRow(rowNum);
+  });
 
-  if (keepRows.length > 0) {
-    sheet.getRange(2, 1, keepRows.length, numCols).setValues(keepRows);
-  }
-
-  // Очищаем хвост
-  const clearStart = keepRows.length + 2;
-  if (clearStart <= last) {
-    sheet.getRange(clearStart, 1, last - clearStart + 1, numCols).clearContent();
-  }
-
-  return deleted;
+  return rowsToDelete.length;
 }
 
 // Чтение данных рабочего листа — общая функция для 'get' и 'sync' 
 function readWorkSheetData(sheet) {
   const last = sheet.getLastRow();
-  if (last < 2) return [];
-  const vals = sheet.getRange(2, 1, last - 1, COL_TAKEN).getValues();
+  if (last < 3) return []; // строка 2 — шаблон, данные с 3-й
+  const vals = sheet.getRange(3, 1, last - 2, COL_TAKEN).getValues();
   return vals
-    .filter(r => String(r[COL_BARCODE-1]).trim() !== '')
-    .map(r => [
-      String(r[COL_BARCODE-1]).trim(),
-      String(r[COL_NAME-1]),
-      String(r[COL_CODE-1]),
-      String(r[COL_EXTRA-1]),
-      String(r[COL_CELL-1]).trim(),
-    ]);
+    .filter(function(r) { return String(r[COL_BARCODE-1]).trim() !== ''; })
+    .map(function(r) { return [
+      String(r[COL_BARCODE-1]).trim(),  // A — штрихкод
+      String(r[COL_NAME-1]),            // B — название (из формулы ВПР)
+      String(r[COL_CODE-1]),            // C — артикул
+      String(r[COL_EXTRA-1]),           // D — код материала
+      String(r[COL_CELL-1]).trim(),     // F — ячейка склада
+    ];});
 }
 
 // ── Общая логика разбора буфера (используется и onEdit, и API) ─────
@@ -239,21 +272,23 @@ function processInputBuffer(sheet, values) {
   let added = 0;
   if (barcodesToInsert.length > 0) {
     const lastRowA = sheet.getLastRow();
-    let nextRow = 2;
-    if (lastRowA >= 2) {
-      const aValues = sheet.getRange('A1:A' + lastRowA).getValues();
+    let nextRow = 3; // минимум строка 3 — строка 2 содержит шаблонные формулы ВПР
+    if (lastRowA >= 3) {
+      const aValues = sheet.getRange('A3:A' + lastRowA).getValues();
       for (let j = aValues.length - 1; j >= 0; j--) {
-        if (aValues[j][0] !== '') { nextRow = j + 2; break; }
+        if (aValues[j][0] !== '') { nextRow = j + 3; break; }
       }
     }
     const count = barcodesToInsert.length;
-    sheet.getRange(nextRow, COL_BARCODE, count, 1).setValues(barcodesToInsert);      // A
-    sheet.getRange(nextRow, COL_CELL,    count, 1).setValues(storageCellsToInsert);  // E
-    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);      // F
+    sheet.getRange(nextRow, COL_BARCODE, count, 1).setValues(barcodesToInsert); // A
+    sheet.getRange(nextRow, COL_CELL,    count, 1).setValues(storageCellsToInsert); // F
+    sheet.getRange(nextRow, COL_TAKEN,   count, 1).setValues(statusesToInsert);     // G
 
-    // Протягиваем формулы VLOOKUP из строки 2 на новые строки (B, C, D)
-    // Это нужно чтобы название/артикул/код подтянулись из листа «Остатки»
-    extendFormulas(sheet, nextRow, count);
+    // Протягиваем формулы ВПР из строки 2 на новые строки (B, C, D)
+    // Строка 2 — шаблон; данные начинаются с 3-й строки
+    if (nextRow >= 3) {
+      extendFormulas(sheet, nextRow, count);
+    }
 
     added = count;
   }
@@ -264,16 +299,17 @@ function processInputBuffer(sheet, values) {
 // Протягивает формулы из строки 2 вниз на newRows строк начиная с startRow
 // Если в B2, C2, D2 есть формулы — копирует их на новые строки
 function extendFormulas(sheet, startRow, count) {
+  // Строка 2 — шаблон с формулами ВПР. Копируем формулы из неё на новые строки.
+  // Никогда не записываем в строку 2 — только читаем из неё.
+  if (startRow <= 2) return; // защита шаблонной строки
   try {
-    const formulaCols = [COL_NAME, COL_CODE, COL_EXTRA]; // B (2), C (3), D (4)
+    const formulaCols = [COL_NAME, COL_CODE, COL_EXTRA]; // B, C, D
 
     formulaCols.forEach(function(col) {
       const templateCell = sheet.getRange(2, col);
-
-      // copyTo со встроенным механизмом Google Sheets автоматически сдвигает
-      // диапазоны (A2→A3→A4) — работает с любыми формулами ВПР/VLOOKUP
       if (templateCell.getFormula()) {
         const targetRange = sheet.getRange(startRow, col, count, 1);
+        // copyTo автоматически сдвигает относительные ссылки (A2→A3→A4)
         templateCell.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
       }
     });

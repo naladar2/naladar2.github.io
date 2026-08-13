@@ -197,6 +197,7 @@
       <button class="tab" onclick="showPage('scan')">📡 Сканер</button>
       <button class="tab" onclick="showPage('add')">+ Добавить</button>
       <button class="tab" onclick="showPage('sheets')">Sheets</button>
+      <button class="tab" onclick="showPage('cells')">Ячейки</button>
       <button class="tab" onclick="showPage('catalog')">Список</button>
     </div>
   </div>
@@ -395,6 +396,25 @@
           <br>
           Макрос <code>onEdit</code> разбирает H и записывает в A/F/G.<br>
           Справочник &mdash; лист <code>Остатки</code>.
+        </div>
+      </div>
+      <div class="spacer"></div>
+    </div>
+
+    <!-- ══ CELLS PAGE ══ -->
+    <div class="page" id="page-cells">
+      <div class="card" style="padding:11px 14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;color:var(--muted);flex:1">Ячейки склада</span>
+          <button class="btn btn-secondary btn-sm" onclick="loadCells()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+            Обновить
+          </button>
+        </div>
+      </div>
+      <div id="cellsList" class="card" style="padding:10px 14px">
+        <div style="font-size:13px;color:var(--muted2);text-align:center;padding:12px">
+          Нажмите «Обновить» для загрузки
         </div>
       </div>
       <div class="spacer"></div>
@@ -600,7 +620,7 @@ function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const tabs = ['search','scan','add','sheets','catalog'];
+  const tabs = ['search','scan','add','sheets','cells','catalog'];
   const idx = tabs.indexOf(id);
   if(idx >= 0) document.querySelectorAll('.tab')[idx].classList.add('active');
   currentPage = id;
@@ -608,6 +628,7 @@ function showPage(id) {
   if(id === 'catalog') renderCatalog();
   if(id === 'sheets') updateSheetUI();
   if(id === 'add') populateAddSelects();
+  if(id === 'cells') loadCells();
   if(id === 'scan') initScanPage();
 }
 
@@ -1196,6 +1217,97 @@ function importCSV(e) {
     else alert('Ошибка формата CSV');
   };
   reader.readAsText(file,'UTF-8');
+}
+
+/* ════════════════════════════════════════════
+   CELLS PAGE — просмотр и очистка ячеек
+════════════════════════════════════════════ */
+async function loadCells() {
+  const container = document.getElementById('cellsList');
+  if(!container) return;
+  container.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:12px">Загрузка...</div>';
+
+  if(!S.sheetUrl) {
+    container.innerHTML = '<div style="font-size:13px;color:var(--muted)">Настройте подключение к Google Sheets</div>';
+    return;
+  }
+
+  try {
+    const d = await gasGet({action: 'getCells'});
+    if(!d.cells || !d.cells.length) {
+      container.innerHTML = '<div style="font-size:13px;color:var(--muted2);text-align:center;padding:12px">Ячейки не найдены</div>';
+      return;
+    }
+    // Группируем по первой букве (зоне)
+    const groups = {};
+    d.cells.forEach(item => {
+      const zone = item.cell.replace(/[^A-Za-zА-Яа-я]/g,'').toUpperCase() || '?';
+      if(!groups[zone]) groups[zone] = [];
+      groups[zone].push(item);
+    });
+
+    let html = '<div style="display:flex;flex-direction:column;gap:12px">';
+    Object.keys(groups).sort().forEach(zone => {
+      const color = zoneColor(zone);
+      html += `<div>
+        <div style="font-size:11px;color:${color};text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:6px">
+          Зона ${zone}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+      groups[zone].forEach(item => {
+        html += `<div style="
+          display:flex;align-items:center;gap:6px;
+          background:${hexToRgba(color,.12)};border:1px solid ${hexToRgba(color,.25)};
+          border-radius:8px;padding:5px 10px;
+        ">
+          <span style="font-weight:600;color:${color};font-size:14px">${item.cell}</span>
+          <span style="font-size:12px;color:var(--muted)">${item.count} шт.</span>
+          <button onclick="confirmClearCell('${item.cell}',${item.count})"
+            style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;line-height:1;padding:0 2px"
+            title="Очистить ячейку">✕</button>
+        </div>`;
+      });
+      html += '</div></div>';
+    });
+    html += `<div style="font-size:12px;color:var(--muted2);text-align:right">
+      Всего ячеек: ${d.cells.length} · товаров: ${d.cells.reduce((s,i)=>s+i.count,0)}
+    </div>`;
+    html += '</div>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div style="font-size:13px;color:var(--red)">Ошибка: ${e}</div>`;
+  }
+}
+
+async function confirmClearCell(cell, count) {
+  if(!confirm(`Очистить ячейку ${cell}?\nБудет удалено ${count} товаров из таблицы.`)) return;
+  const container = document.getElementById('cellsList');
+  container.innerHTML = `<div style="font-size:13px;color:var(--muted);text-align:center;padding:12px">Удаление ${cell}...</div>`;
+  try {
+    const d = await gasGet({action: 'clearCell', cell: encodeURIComponent(cell)});
+    if(d.ok) {
+      // Обновляем локальный инвентарь
+      S.inventory = S.inventory.filter(p => p.cell.toUpperCase() !== cell.toUpperCase());
+      // Убираем из deletedItems чтобы не пытаться удалить повторно
+      if(S.deletedItems) S.deletedItems = S.deletedItems.filter(p => p.cell.toUpperCase() !== cell.toUpperCase());
+      if(Array.isArray(d.data)) {
+        S.inventory = d.data.map(row => ({
+          barcode: String(row[0]||''), name: String(row[1]||''),
+          code: String(row[2]||''), extra: String(row[3]||''),
+          cell: String(row[4]||'').toUpperCase(), taken: false
+        })).filter(p => p.barcode);
+      }
+      S.lastSync = Date.now(); saveState();
+      renderCatalogCounts();
+      alert(`Ячейка ${cell} очищена. Удалено: ${d.deleted} товаров.`);
+      loadCells(); // перезагружаем список
+    } else {
+      throw new Error(d.error || 'Ошибка сервера');
+    }
+  } catch(e) {
+    alert('Ошибка очистки: ' + e);
+    loadCells();
+  }
 }
 
 function exportCSV() {
